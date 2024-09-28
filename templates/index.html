@@ -3,27 +3,255 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Image Compression with KMeans</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <title>KMeans Clustering</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 </head>
 <body>
-    <h1>Image Compression using KMeans Clustering</h1>
-    
-    <form id="uploadForm" enctype="multipart/form-data">
-        <label for="file">Select an image:</label>
-        <input type="file" id="file" name="file" accept="image/*" required><br><br>
-
-        <label for="n_colors">Number of colors:</label>
-        <input type="number" id="n_colors" name="n_colors" value="8" min="2" required><br><br>
-
-        <button type="submit">Compress Image</button>
-    </form>
-
-    <h2>Original and Compressed Images</h2>
-    <div id="imageContainer">
-        <img id="compressedImage" alt="Compressed Image" style="display:none;">
+    <h1>KMeans Clustering</h1>
+    <div>
+        <label for="method">Select Initialization Method:</label>
+        <select id="method">
+            <option value="random">Random</option>
+            <option value="farthest">Farthest First</option>
+            <option value="kmeans++">KMeans++</option>
+            <option value="manual">Manual</option>
+        </select>
     </div>
 
-    <script src="/static/scripts.js"></script>
+    <div>
+        <label for="clusters">Number of Clusters (k):</label>
+        <input type="number" id="clusters" value="3" min="1">
+    </div>
+
+    <div>
+        <button id="newDataset">Generate New Dataset</button>
+        <button id="stepKMeans">Step KMeans</button>
+        <button id="runToConverge">Run to Converge</button>
+        <button id="reset">Reset</button>
+    </div>
+
+    <div id="plot"></div>
+    <div id="convergenceMessage"></div>
+
+    <script>
+        let data = [];
+        let manualCentroids = [];
+        let centroids = [];
+        let converged = false;
+        let iteration = 0;
+
+        // Generate New Dataset
+        document.getElementById('newDataset').addEventListener('click', function() {
+            resetState();
+            fetch('/generate_dataset', {
+                method: 'POST',
+            })
+            .then(response => response.json())
+            .then(dataset => {
+                data = dataset;  // Set new dataset
+                manualCentroids = [];  // Clear manually selected centroids
+                centroids = [];  // Clear centroids
+                plotData();  // Plot the new dataset
+            });
+        });
+
+        // Step through KMeans
+        document.getElementById('stepKMeans').addEventListener('click', function() {
+            if (converged) {
+                alert("KMeans has already converged. Please reset to run again.");
+                return;
+            }
+
+            const method = document.getElementById('method').value;
+            const k = parseInt(document.getElementById('clusters').value, 10);
+
+            if (method === 'manual' && manualCentroids.length === 0) {
+                alert("Please select centroids by clicking on the plot.");
+                return;
+            }
+
+            // Ensure data exists before stepping KMeans
+            if (!data.length) {
+                alert("Please generate a dataset first.");
+                return;
+            }
+
+            fetch('/kmeans_step_by_step', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    data: data,
+                    k: k,
+                    method: method,
+                    centroids: centroids,  // Send the centroids from the last step
+                    iteration: iteration
+                })
+            })
+            .then(response => response.json())
+            .then(result => {
+                plotClusters(result.centroids, result.labels);
+                centroids = result.centroids;  // Update centroids for the next step
+                iteration += 1;
+
+                // Check for convergence and show pop-up if converged
+                if (result.converged) {
+                    alert("KMeans has successfully converged!");
+                    converged = true;
+                }
+            });
+        });
+
+        // Run to Converge
+        document.getElementById('runToConverge').addEventListener('click', function() {
+            if (converged) {
+                alert("KMeans has already converged. Please reset to run again.");
+                return;
+            }
+
+            const method = document.getElementById('method').value;
+            const k = parseInt(document.getElementById('clusters').value, 10);
+
+            if (method === 'manual' && manualCentroids.length === 0) {
+                alert("Please select centroids by clicking on the plot.");
+                return;
+            }
+
+            fetch('/run_to_converge', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    data: data,
+                    k: k,
+                    method: method,
+                    centroids: centroids  // Send the initial centroids
+                })
+            })
+            .then(response => response.json())
+            .then(result => {
+                plotClusters(result.centroids, result.labels);
+                centroids = result.centroids;  // Final centroids after convergence
+                alert("KMeans has successfully converged!");
+                converged = true;
+            });
+        });
+
+        // Enable manual centroid selection by clicking on the plot
+        function enableManualCentroidSelection() {
+            document.getElementById('plot').on('plotly_click', function(data) {
+                const k = parseInt(document.getElementById('clusters').value, 10);
+
+                // Only allow selecting up to 'k' centroids
+                if (manualCentroids.length < k) {
+                    const point = data.points[0];
+                    const x = point.x;
+                    const y = point.y;
+
+                    // Add the clicked point as a manual centroid
+                    manualCentroids.push([x, y]);
+                    centroids = manualCentroids;  // Use manual centroids for clustering
+
+                    // Re-plot with the new centroid
+                    plotData();  // Re-plot the initial dataset
+                    plotManualCentroids();  // Plot selected centroids
+
+                    if (manualCentroids.length === k) {
+                        alert(`You've selected all ${k} centroids.`);
+                    }
+                } else {
+                    alert("You have already selected the maximum number of centroids.");
+                }
+            });
+        }
+
+        // Plot Data (New Dataset)
+        function plotData() {
+            const trace = {
+                x: data.map(d => d[0]),
+                y: data.map(d => d[1]),
+                mode: 'markers',
+                type: 'scatter',
+                marker: { color: 'black' }  // Set default color for data points
+            };
+            const layout = {
+                title: 'Random Dataset',
+                xaxis: { title: 'X' },
+                yaxis: { title: 'Y' }
+            };
+            Plotly.newPlot('plot', [trace], layout);
+            enableManualCentroidSelection();  // Enable manual centroid selection after plotting
+        }
+
+        // Plot manually selected centroids
+        function plotManualCentroids() {
+            if (manualCentroids.length > 0) {
+                const centroidTrace = {
+                    x: manualCentroids.map(d => d[0]),
+                    y: manualCentroids.map(d => d[1]),
+                    mode: 'markers',
+                    type: 'scatter',
+                    marker: { color: 'red', size: 12, symbol: 'x' },
+                    name: 'Manual Centroids'
+                };
+                Plotly.addTraces('plot', centroidTrace);  // Add the centroids to the plot
+            }
+        }
+
+        // Plot Clusters with dynamic colors based on number of clusters
+        function plotClusters(centroids, labels) {
+            const k = parseInt(document.getElementById('clusters').value, 10);  // Get the number of clusters
+            const colors = generateColors(k);  // Generate colors for the clusters
+
+            let clusterData = [];
+            for (let i = 0; i < centroids.length; i++) {
+                const clusterPoints = data.filter((_, idx) => labels[idx] === i);
+                clusterData.push({
+                    x: clusterPoints.map(d => d[0]),
+                    y: clusterPoints.map(d => d[1]),
+                    mode: 'markers',
+                    type: 'scatter',
+                    marker: { color: colors[i % colors.length] },  // Assign color to the cluster
+                    name: `Cluster ${i + 1}`
+                });
+            }
+            const centroidTrace = {
+                x: centroids.map(d => d[0]),
+                y: centroids.map(d => d[1]),
+                mode: 'markers',
+                marker: { color: 'black', size: 12, symbol: 'x' },
+                name: 'Centroids'
+            };
+            Plotly.newPlot('plot', [...clusterData, centroidTrace], { title: 'KMeans Clustering' });
+        }
+
+        // Generate colors based on the number of clusters
+        function generateColors(k) {
+            const colorPalette = ['red', 'green', 'blue', 'orange', 'purple', 'yellow', 'cyan', 'magenta', 'lime', 'pink'];
+            const colors = [];
+            for (let i = 0; i < k; i++) {
+                colors.push(colorPalette[i % colorPalette.length]); // Cycle through the palette
+            }
+            return colors;
+        }
+
+        // Reset the state of the page and return to the initial dataset without clustering
+        document.getElementById('reset').addEventListener('click', function() {
+            resetState();
+            plotData();  // Re-plot initial dataset after reset, without clusters
+        });
+
+        // Reset the state of the page
+        function resetState() {
+            converged = false;
+            manualCentroids = [];
+            centroids = [];
+            iteration = 0;
+            document.getElementById('convergenceMessage').innerHTML = '';
+            Plotly.purge('plot');  // Clear the plot on reset
+        }
+    </script>
 </body>
 </html>
